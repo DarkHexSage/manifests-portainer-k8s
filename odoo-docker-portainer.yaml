@@ -1,0 +1,170 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: odoo
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: odoo-db-secret
+  namespace: odoo
+type: Opaque
+stringData:
+  db-password: "odoo-secure-password"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: odoo-pvc
+  namespace: odoo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: oci-bv
+  resources:
+    requests:
+      storage: 20Gi
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+  namespace: odoo
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: oci-bv
+  resources:
+    requests:
+      storage: 15Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: odoo
+spec:
+  clusterIP: None
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: odoo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+      - name: postgres
+        image: docker.io/library/postgres:15
+        ports:
+        - containerPort: 5432
+        env:
+        - name: POSTGRES_DB
+          value: odoo
+        - name: POSTGRES_USER
+          value: odoo
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: odoo-db-secret
+              key: db-password
+        volumeMounts:
+        - name: postgres-storage
+          mountPath: /var/lib/postgresql/data
+        livenessProbe:
+          exec:
+            command:
+            - /bin/sh
+            - -c
+            - pg_isready -U odoo
+          initialDelaySeconds: 30
+          periodSeconds: 10
+      volumes:
+      - name: postgres-storage
+        persistentVolumeClaim:
+          claimName: postgres-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: odoo
+  namespace: odoo
+spec:
+  type: ClusterIP
+  selector:
+    app: odoo
+  ports:
+    - name: web
+      protocol: TCP
+      port: 8069
+      targetPort: 8069
+    - name: longpolling
+      protocol: TCP
+      port: 8072
+      targetPort: 8072
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: odoo
+  namespace: odoo
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: odoo
+  template:
+    metadata:
+      labels:
+        app: odoo
+    spec:
+      containers:
+      - name: odoo
+        image: docker.io/library/odoo:17
+        ports:
+        - containerPort: 8069
+        - containerPort: 8072
+        env:
+        - name: HOST
+          value: postgres
+        - name: USER
+          value: odoo
+        - name: PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: odoo-db-secret
+              key: db-password
+        volumeMounts:
+        - name: odoo-storage
+          mountPath: /var/lib/odoo
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 8069
+          initialDelaySeconds: 60
+          periodSeconds: 10
+      volumes:
+      - name: odoo-storage
+        persistentVolumeClaim:
+          claimName: odoo-pvc
